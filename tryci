@@ -51,10 +51,6 @@ run_image() {
     # We run the container with CAP_PERFMON capabilities to
     # allow perf_event_open() to work (for those repos requiring the use
     # of e.g. Intel PT).
-    #
-    # XXX: `--rm` removes the container on exit, but in the future we might
-    # think about leaving failed containers behind (for X hours?) for
-    # post-mortem debugging.
     container_tag=`docker create --cap-add CAP_PERFMON -u ${ci_uid} ${image_tag}`
     docker start -a ${container_tag}
     status=$?
