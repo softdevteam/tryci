@@ -1,0 +1,161 @@
+#!/bin/sh
+#
+# Script to emulate a CI job run on buildbot servers
+#
+# Each Dockerfile with the fliename prefix `.buildbot_dockerfile_` is tested
+# and the return status of this script is the number of images that failed
+# (thus 0 indicating success).
+#
+# If no docker files are found, then a default, minimal image is used, and a
+# script named `.buildbot.sh` is run inside the resulting container.
+#
+# It is assumed that the user invoking this script has permissions to use
+# docker. On Linux this means the user must be in the `docker` group.
+
+DEFAULT_DOCKERFILE=.buildbot_dockerfile_default
+
+set -e
+
+run_image() {
+    # Extract the dockerfile suffix. E.g. for '.buildbot_dockerfile_myrepo'
+    # it's 'myimage'.
+    suffix=`echo "$1" | sed -e 's/^.buildbot_dockerfile_//'`
+
+    # Generate an identifier for the repository.
+    if [ "${REPOSITORY}" != "" ]; then
+		# Buildbot will set $REPOSITORY to a git url.
+		#
+		# Transform URLs like `https://github.com/user/repo` into
+		# `github.com_user_repo`.
+		repo=`echo ${REPOSITORY} | \
+			sed -E 's/https:\/\/|git:\/\/(.*)/\1/g' | tr '/' '_' | sed -E 's/_$//'`
+	else
+        # If repository isn't set, make a pseudo-name that can be used in place
+        # of the proper repo identifier.
+        dir=`pwd`
+        repo="local-`basename ${dir}`"
+	fi
+
+    # Image name must be unique to the buildbot worker so that workers don't clash.
+    image_tag=${LOGNAME}-${repo}-${suffix}
+
+    # The container will be run as the worker's "host user". The image is
+    # expected to create a user with the same UID.
+    ci_uid=`id -u`
+
+    # Build an image for the CI job.
+    docker build --build-arg CI_UID=${ci_uid} -t ${image_tag} --file $1 .
+
+    # Run the CI job.
+    #
+    # We run the container with CAP_PERFMON capabilities to
+    # allow perf_event_open() to work (for those repos requiring the use
+    # of e.g. Intel PT).
+    #
+    # XXX: `--rm` removes the container on exit, but in the future we might
+    # think about leaving failed containers behind (for X hours?) for
+    # post-mortem debugging.
+    container_tag=`docker create --cap-add CAP_PERFMON -u ${ci_uid} ${image_tag}`
+    docker start -a ${container_tag}
+    status=$?
+
+    if [ ${pm} -eq 1 -a ${status} -ne 0 ]; then
+        echo "=================== [ CI Job failure ] =================="
+        echo "Setting up a login shell for post-mortem..."
+
+        post_mortem_tag="${image_tag}-post-mortem"
+        docker commit ${container_tag} ${post_mortem_tag} &> /dev/null
+        echo "You can now prod around inside the image."
+        echo "Type \"exit\" to detach and remove the image."
+        echo "(note that you will be root)"
+        docker run -ti --entrypoint=/bin/bash -u root ${post_mortem_tag}
+        echo "=================== [ CI Job failure ] =================="
+    elif [ ${pm} -eq 0 -a ${status} -ne 0 ]; then
+        echo "=================== [CI Job failure ] =================="
+        echo "To prod around inside the image, re-run this script with the --post-mortem flag."
+        echo "(note that you will be root)"
+        echo "========================================================="
+    fi
+
+    return ${status}
+}
+
+usage() {
+    echo "Runs a soft-dev CI job."
+    echo "Must be run from the same directory as the job's .buildbot.sh file."
+    echo "usage: citry [-p] [-r server_name]"
+    echo "  -p, --post-mortem         Attach a shell to the image to prod around if the build fails."
+    echo "  -r, --remote server_name  Specify the server server_name to run the CI job on over SSH."
+}
+
+# Parse arguments
+pm=0
+server=""
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    -p | --post-mortem)
+      pm=1
+      shift
+      ;;
+    -r | --remote)
+      server="$2"
+      shift
+      shift
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [ ! -z ${server} ]; then
+    export DOCKER_HOST="ssh://${server}"
+fi
+
+
+# Collect dockerfiles to test inside of.
+ci_dockerfiles=`ls .buildbot_dockerfile_* 2>/dev/null || true`
+
+# If the repo doesn't define any images, then use the default image.
+if [ "${ci_dockerfiles}" = "" ]; then
+    cat << EOF > ${DEFAULT_DOCKERFILE}
+    FROM debian:bullseye
+    ARG CI_UID
+    RUN useradd -m -u \${CI_UID} ci
+    RUN apt-get update && \
+        apt-get -y install build-essential curl procps file
+    WORKDIR /ci
+    RUN chown \${CI_UID}:\${CI_UID} .
+    COPY --chown=\${CI_UID}:\${CI_UID} . .
+    CMD sh -x .buildbot.sh
+EOF
+    ci_dockerfiles=${DEFAULT_DOCKERFILE}
+fi
+
+# Sequentially run the images.
+#
+# XXX: In the future we might decide to run the images in parallel, but we'd
+# have to think about how to format the logs. We might also investigate having
+# buildbot run separate jobs in parallel.
+num_failed=0
+failed_dockerfiles=""
+for dockerfile in ${ci_dockerfiles}; do
+    echo "CI> Running ${dockerfile}..."
+    rc=0
+    run_image ${dockerfile} || rc=$?
+    if [ $rc -eq 0 ]; then
+        echo "CI> ${dockerfile}: [ OK ]"
+    else
+        echo "CI> ${dockerfile}: [ FAIL ]"
+        failed_dockerfiles="${failed_dockerfiles} ${dockerfile}"
+        num_failed=$((${num_failed} + 1))
+    fi
+done
+
+if [ ${num_failed} -ne 0 ]; then
+    echo "CI> Failed images:${failed_dockerfiles}"
+fi
+
+exit $num_failed
