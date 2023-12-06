@@ -83,7 +83,7 @@ run_image() {
 usage() {
     echo "Runs a soft-dev CI job."
     echo "Must be run from the same directory as the job's .buildbot.sh file."
-    echo "usage: citry [-p] [-r server_name]"
+    echo "usage: tryci [-p] [-r server_name]"
     echo "  -p, --post-mortem         Attach a shell to the image to prod around if the build fails."
     echo "  -r, --remote server_name  Specify the server server_name to run the CI job on over SSH."
 }

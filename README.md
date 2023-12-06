@@ -17,7 +17,7 @@ in my `~/.ssh/config`):
 
 ```sh
 cd /path/to/alloy
-try_ci --remote bencher16 --post-mortem
+tryci --remote bencher16 --post-mortem
 ```
 
 The `--remote` arg specifies the ssh host where the build should be run. 
