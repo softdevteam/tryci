@@ -1,5 +1,5 @@
-#!/bin/sh
-#
+#! /bin/sh
+
 # Script to emulate a CI job run on buildbot servers
 #
 # Each Dockerfile with the fliename prefix `.buildbot_dockerfile_` is tested
