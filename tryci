@@ -1,5 +1,5 @@
-#!/bin/sh
-#
+#! /bin/sh
+
 # Script to emulate a CI job run on buildbot servers
 #
 # Each Dockerfile with the fliename prefix `.buildbot_dockerfile_` is tested
@@ -23,18 +23,18 @@ run_image() {
 
     # Generate an identifier for the repository.
     if [ "${REPOSITORY}" != "" ]; then
-		# Buildbot will set $REPOSITORY to a git url.
-		#
-		# Transform URLs like `https://github.com/user/repo` into
-		# `github.com_user_repo`.
-		repo=`echo ${REPOSITORY} | \
-			sed -E 's/https:\/\/|git:\/\/(.*)/\1/g' | tr '/' '_' | sed -E 's/_$//'`
-	else
+        # Buildbot will set $REPOSITORY to a git url.
+        #
+        # Transform URLs like `https://github.com/user/repo` into
+        # `github.com_user_repo`.
+        repo=`echo ${REPOSITORY} | \
+            sed -E 's/https:\/\/|git:\/\/(.*)/\1/g' | tr '/' '_' | sed -E 's/_$//'`
+    else
         # If repository isn't set, make a pseudo-name that can be used in place
         # of the proper repo identifier.
         dir=`pwd`
         repo="local-`basename ${dir}`"
-	fi
+    fi
 
     # Image name must be unique to the buildbot worker so that workers don't clash.
     image_tag=${LOGNAME}-${repo}-${suffix}
