@@ -51,7 +51,7 @@ run_image() {
     # We run the container with CAP_PERFMON capabilities to
     # allow perf_event_open() to work (for those repos requiring the use
     # of e.g. Intel PT).
-    container_tag=`docker create --cap-add CAP_PERFMON -u ${ci_uid} ${image_tag}`
+    container_tag=`docker create --cap-add CAP_PERFMON -u ${ci_uid} -v /opt/ykllvm_cache:/opt/ykllvm_cache:ro ${image_tag}`
     docker start -a ${container_tag}
     status=$?
 
