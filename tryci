@@ -44,7 +44,7 @@ run_image() {
     ci_uid=`id -u`
 
     # Build an image for the CI job.
-    docker build --build-arg CI_UID=${ci_uid} -t ${image_tag} --file $1 .
+    docker build --build-arg CI_UID=${ci_uid} --build-arg CI_RUNNER=tryci -t ${image_tag} --file $1 .
 
     # Run the CI job.
     #
