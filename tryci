@@ -14,6 +14,9 @@
 
 DEFAULT_DOCKERFILE=.buildbot_dockerfile_default
 
+# Arguments to enable capabilities in containers.
+CAP_ARGS="--cap-add CAP_PERFMON"
+
 set -e
 
 run_image() {
@@ -51,7 +54,7 @@ run_image() {
     # We run the container with CAP_PERFMON capabilities to
     # allow perf_event_open() to work (for those repos requiring the use
     # of e.g. Intel PT).
-    container_tag=`docker create --cap-add CAP_PERFMON -u ${ci_uid} -v /opt/ykllvm_cache:/opt/ykllvm_cache:ro ${image_tag}`
+    container_tag=`docker create ${CAP_ARGS} -u ${ci_uid} -v /opt/ykllvm_cache:/opt/ykllvm_cache:ro ${image_tag}`
     docker start -a ${container_tag}
     status=$?
 
@@ -64,7 +67,7 @@ run_image() {
         echo "You can now prod around inside the image."
         echo "Type \"exit\" to detach and remove the image."
         echo "(note that you will be root)"
-        docker run -ti --entrypoint=/bin/bash -u root ${post_mortem_tag}
+        docker run ${CAP_ARGS} -ti --entrypoint=/bin/bash -u root ${post_mortem_tag}
         echo "=================== [ CI Job failure ] =================="
     elif [ ${pm} -eq 0 -a ${status} -ne 0 ]; then
         echo "=================== [CI Job failure ] =================="
