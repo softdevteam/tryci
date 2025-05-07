@@ -14,8 +14,9 @@
 
 DEFAULT_DOCKERFILE=.buildbot_dockerfile_default
 
-# Arguments to enable capabilities in containers.
-CAP_ARGS="--cap-add CAP_PERFMON"
+# Arguments to enable PT and rr support in docker.
+CAP_ARGS="--cap-add CAP_PERFMON --cap-add SYS_PTRACE --security-opt seccomp=unconfined"
+
 
 set -e
 
