@@ -20,6 +20,8 @@ CAP_ARGS="--cap-add CAP_PERFMON --cap-add SYS_PTRACE --security-opt seccomp=unco
 
 set -e
 
+error() { printf "\e[31m[ERROR]\e[0m %s\n" "$1" >&2; }
+
 run_image() {
     # Extract the dockerfile suffix. E.g. for '.buildbot_dockerfile_myrepo'
     # it's 'myimage'.
@@ -109,6 +111,12 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+if [ ! docker buildx version &>/dev/null ] && [ -z ${server} ]; then
+    error "Docker Buildx is not installed or not available in your PATH".
+    error "For installation instructions, visit: https://docs.docker.com/buildx/working-with-buildx/"
+    exit 1
+fi
 
 if [ ! -z ${server} ]; then
     export DOCKER_HOST="ssh://${server}"
