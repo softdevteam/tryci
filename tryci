@@ -34,6 +34,14 @@ Must be run from the same directory as the job's .buildbot.sh file.
 usage: tryci [-p] [-r server_name] [-b <ref>] [-h]
 
 Options:
+  -m, --mount <mount> [<mount> ...]
+      Specify one or more bind-mounts. Each <mount> should be in the form:
+        <host-path>:<container-path>[:ro|rw]
+      You can specify multiple bind-mounts by repeating the option or by
+      providing a comma-separated list:
+        -m /src:/dst -m /foo:/bar:ro
+        -m /src:/dst,/foo:/bar:ro
+
   -p, --post-mortem
       Attach a shell to the image to prod around if the build fails.
 
@@ -182,7 +190,7 @@ build_image() {
     container_tag=$(docker create \
       ${CAP_ARGS} \
       -u "${ci_uid}" \
-      -v /opt/ykllvm_cache:/opt/ykllvm_cache:ro \
+      ${volumes}
       "${image_tag}")
 }
 
@@ -214,6 +222,7 @@ run_image() {
 pm=0
 server=""
 ref=""
+volumes="-v /opt/ykllvm_cache:/opt/ykllvm_cache:ro"
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -228,6 +237,25 @@ while [ $# -gt 0 ]; do
     -c | --checkout)
       ref="$2"
       shift 2
+      ;;
+    -m | --mounts)
+      # Support both repeated and comma-separated mounts
+      shift
+      if [[ -z "$1" || "$1" =~ ^- ]]; then
+        error "--mounts requires an argument."
+        exit 1
+      fi
+
+      IFS=',' read -ra mounts <<< "$1"
+      for m in "${mounts[@]}"; do
+        if [[ ! "$m" =~ ^[^:]+:[^:]+(:ro|:rw)?$ ]]; then
+          error "Invalid bind mount: '$m'"
+          error "Expected format: /host/path:/container/path[:ro|rw]"
+          exit 1
+        fi
+        volumes+=" -v $m"
+      done
+      shift
       ;;
     -h | --help)
       usage

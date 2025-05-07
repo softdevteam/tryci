@@ -59,13 +59,33 @@ This works with the `--post-mortem` flag, so -- provided docker is installed --
 you can even use `TryCI` to prod around in a CI job on machines which you
 haven't cloned the original repo or setup to develop on.
 
+## Using bindmounts for faster build times
+
+Sometimes a CI build will depend on a submodule or external program which the
+`.buildbot.sh` script builds from source each time. For large projects (like
+`ykllvm`, which can take up to an hour to build) this can make build times
+significantly slower.
+
+Instead, you can mount arbitrarily many prebuilt programs from the host to be
+used inside the docker container using `-m/--mount` flag. You can specify
+multiple bind-mounts by repeating the option or by providing a comma-separated
+list:
+
+```
+-m /src:/dst -m /foo:/bar:ro
+-m /src:/dst,/foo:/bar:ro
+```
+If using this with the `--remote` flag, you must ensure the directory you wish
+to bind-mount exists on the remote machine -- it does not `scp` / `rsync` it
+over.
+
 ## Troubleshooting
 
 * Docker must be installed on both the local machine and remote machine used to
   compile and run the build.
 * Your user account on both the local and remote machine must be a member of the
   `docker` group.
-* If running CI on a remote machine (`--remote server_name`) you must use ssh
+* If running CI on a remote machine (`--remote <server_name>`) you must use ssh
   passwordless login (using public/private key pair).
 
 
