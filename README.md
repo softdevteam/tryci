@@ -27,6 +27,29 @@ can prod around inside the container.
 
 The docker image and container for the build are removed before the script exits.
 
+## Using bindmounts for faster build times
+
+Sometimes a CI build will depend on a submodule or external program which the
+`.buildbot.sh` script builds from source each time. For large projects (like
+`ykllvm`, which can take up to an hour to build) this can make build times
+significantly slower.
+
+Instead, you can mount prebuilt programs from the host to be used inside the
+docker container using the `TRYCI_BINDMOUNTS` environment variable.
+`TRYCI_BINDMOUNTS` takes a comma-separated list of bindmounts. For example:
+
+    `~/research/ykllvm/build/bin:/ci/ykllvm/inst/bin`
+
+This will map `~/research/ykllvm/build/bin` on the host to
+`/ci/ykllvm/inst/bin` inside the CI container. Note that in order to prevent
+unintended overwriting, such mappings are always mounted as read-only. If your
+`.buildbot.sh` tries to write to a bind-mounted directory you will encounter
+errors.
+
+If using this with the `--remote` flag, you must ensure the directory you wish
+to bind-mount exists on the remote machine -- it does not `scp` / `rsync` it
+over.
+
 ## Troubleshooting
 
 * Docker must be installed on both the local machine and remote machine used to
