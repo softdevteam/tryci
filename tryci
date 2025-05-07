@@ -17,6 +17,8 @@ DEFAULT_DOCKERFILE=.buildbot_dockerfile_default
 # Arguments to enable PT and rr support in docker.
 CAP_ARGS="--cap-add CAP_PERFMON --cap-add SYS_PTRACE --security-opt seccomp=unconfined"
 
+# FIXME: We should probably remove this default option eventually as it's specific to a particular yk workflow.
+TRYCI_BINDMOUNTS="${TRYCI_BINDMOUNTS:=/opt/ykllvm_cache:/opt/ykllvm_cache:ro}"
 
 set -e
 
@@ -50,12 +52,25 @@ run_image() {
     # Build an image for the CI job.
     docker build --build-arg CI_UID=${ci_uid} --build-arg CI_RUNNER=tryci -t ${image_tag} --file $1 .
 
+    IFS=','
+    volumes=""
+    # Create a volume mapping for each bindmount in the comma-separated
+    # `TRYCI_BINDMOUNTS` env var which can be passed to the container.
+    for bm in $TRYCI_BINDMOUNTS; do
+      if [[ $bm != *:ro ]]; then
+        # Ensure we only bind-mount read-only.
+        bm="$bm:ro"
+      fi
+      volumes="$volumes -v $bm "
+    done
+    unset IFS
+
     # Run the CI job.
     #
     # We run the container with CAP_PERFMON capabilities to
     # allow perf_event_open() to work (for those repos requiring the use
     # of e.g. Intel PT).
-    container_tag=`docker create ${CAP_ARGS} -u ${ci_uid} -v /opt/ykllvm_cache:/opt/ykllvm_cache:ro ${image_tag}`
+    container_tag=`docker create ${CAP_ARGS} -u ${ci_uid} ${volumes} ${image_tag}`
     docker start -a ${container_tag}
     status=$?
 
