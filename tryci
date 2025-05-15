@@ -59,6 +59,13 @@ Options:
       Specify the server <server-name> to run the CI job on over SSH.
       Useful if you want to test on a remote CI environment.
 
+  -s, --script <path>
+      Run the CI script at <path> instead of the default '.buildbot.sh'. This
+      is especially useful with '-c/--checkout', which by default uses the
+      '.buildbot.sh' from the specified git reference. Use this option if you
+      want to test a different or updated CI script, for example to pinpoint
+      when a bug was introduced.
+
   -h, --help
       Show this help message and exit.
 EOF
@@ -83,7 +90,7 @@ resolve_build_ctxt() {
     # the default build context as the current working directory and generate a
     # best-guess image prefix in the format: local-<pwd>:dirty.
     if [ -z "$ref" ]; then
-        if [ ! -f ${TRYCI_DEFAULT_SCRIPT} ]; then
+        if [ -z $script ] && [ ! -f ${TRYCI_DEFAULT_SCRIPT} ]; then
             error "${TRYCI_DEFAULT_SCRIPT} not found in directory: $pwd".
             exit 1
         else
@@ -117,6 +124,10 @@ resolve_build_ctxt() {
             git -C "$tmpdir" checkout "$tag"
         else
             git clone --depth="$TRYCI_REMOTE_CLONE_DEPTH" "$base_url" "$tmpdir"
+        fi
+
+        if [ -z $script ] && [ ! -f "$TRYCI_BUILD_CTXT/$TRYCI_DEFAULT_SCRIPT" ]; then
+            error "${TRYCI_DEFAULT_SCRIPT} not found in ${ref}."
         fi
 
         # For the image tag, transform URLs like `https://github.com/user/repo`
@@ -158,6 +169,10 @@ resolve_build_ctxt() {
         fi
     fi
 
+    if [ ! -z $script ]; then
+        cp "$script" "$tmpdir"
+    fi
+
     # This is important for projects like 'alloy' and 'yk' because we
     # deliberatly did not clone recursively.
     git -C "$tmpdir" submodule update --progress --init --recursive
@@ -172,6 +187,14 @@ resolve_build_ctxt() {
 
 build_image() {
     local dockerfile="$TRYCI_BUILD_CTXT/$1"
+    local tmp_dockerfile=$(mktemp)
+
+    if [ -n "$script" ]; then
+        sed '$c\CMD ["sh", "-x", "'"$(basename "$script")"'"]' "$dockerfile" > "$tmp_dockerfile"
+    else
+        cp "$dockerfile" "$tmp_dockerfile"
+    fi
+
     # Extract the dockerfile suffix. E.g. for '.buildbot_dockerfile_myrepo'
     # it's 'myrepo'.
     local suffix=$(echo "$1" | sed -e "s/^${TRYCI_DOCKERFILE_BASE}//")
@@ -184,7 +207,7 @@ build_image() {
       --build-arg CI_UID="${ci_uid}" \
       --build-arg CI_RUNNER=tryci \
       -t "${image_tag}" \
-      --file "${dockerfile}" \
+      --file "${tmp_dockerfile}" \
       "${TRYCI_BUILD_CTXT}"
 
     container_tag=$(docker create \
@@ -223,6 +246,7 @@ pm=0
 server=""
 ref=""
 volumes="-v /opt/ykllvm_cache:/opt/ykllvm_cache:ro"
+script=""
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -256,6 +280,9 @@ while [ $# -gt 0 ]; do
         volumes+=" -v $m"
       done
       shift
+    -s | --script)
+      script="$2"
+      shift 2
       ;;
     -h | --help)
       usage
@@ -274,6 +301,11 @@ if [ ! docker buildx version &>/dev/null ] && [ -z ${server} ]; then
     exit 1
 fi
 
+if [ ! -z $script ] && [ ! -f $script ]; then
+    error "File not found: $script"
+    exit 1
+fi
+
 if [ ! -z ${server} ]; then
     export DOCKER_HOST="ssh://${server}"
 fi
@@ -289,10 +321,6 @@ TRYCI_DOCKERFILES=$(
     -exec basename {} \; \
     2>/dev/null
 )
-
-if [ ! -f "$TRYCI_BUILD_CTXT/$TRYCI_DEFAULT_SCRIPT" ]; then
-    error "${TRYCI_DEFAULT_SCRIPT} not found in repository."
-fi
 
 # If the repo doesn't define any images, then use the default image.
 if [ "${TRYCI_DOCKERFILES}" = "" ]; then
