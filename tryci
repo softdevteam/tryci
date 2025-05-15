@@ -12,50 +12,181 @@
 # It is assumed that the user invoking this script has permissions to use
 # docker. On Linux this means the user must be in the `docker` group.
 
-DEFAULT_DOCKERFILE=.buildbot_dockerfile_default
 
 # Arguments to enable PT and rr support in docker.
 CAP_ARGS="--cap-add CAP_PERFMON --cap-add SYS_PTRACE --security-opt seccomp=unconfined"
 
+TRYCI_BUILD_CTXT="."
+TRYCI_REMOTE_CLONE_DEPTH=100 # This is the same as on our CI server
+TRYCI_DOCKERFILES=""
+TRYCI_DEFAULT_SCRIPT=".buildbot.sh"
+TRYCI_DOCKERFILE_BASE=.buildbot_dockerfile_
+TRYCI_DEFAULT_DOCKERFILE=${TRYCI_DOCKERFILE_BASE}default
+TRYCI_BUILD_PREFIX=""
 
 set -e
 
-run_image() {
-    # Extract the dockerfile suffix. E.g. for '.buildbot_dockerfile_myrepo'
-    # it's 'myimage'.
-    suffix=`echo "$1" | sed -e 's/^.buildbot_dockerfile_//'`
+usage() {
+    cat <<EOF
+Runs a soft-dev CI job.
+Must be run from the same directory as the job's .buildbot.sh file.
 
-    # Generate an identifier for the repository.
-    if [ "${REPOSITORY}" != "" ]; then
-        # Buildbot will set $REPOSITORY to a git url.
-        #
-        # Transform URLs like `https://github.com/user/repo` into
-        # `github.com_user_repo`.
-        repo=`echo ${REPOSITORY} | \
-            sed -E 's/https:\/\/|git:\/\/(.*)/\1/g' | tr '/' '_' | sed -E 's/_$//'`
-    else
-        # If repository isn't set, make a pseudo-name that can be used in place
-        # of the proper repo identifier.
-        dir=`pwd`
-        repo="local-`basename ${dir}`"
+usage: tryci [-p] [-r server_name] [-b <ref>] [-h]
+
+Options:
+  -p, --post-mortem
+      Attach a shell to the image to prod around if the build fails.
+
+  -r, --remote server_name
+      Specify the server \`server_name\` to run the CI job on over SSH.
+      Useful if you want to test on a remote CI environment.
+
+  -c, --checkout <ref>
+      Tryci will run a CI job from a clone of <ref> instead of the
+      working tree. Valid formats:
+      - Branch name (e.g., main, feature/x)
+      - Commit hash (e.g., a1b2c3d)
+      - Tag (e.g., v1.0.0)
+      - Remote-tracking branch (e.g., origin/main)
+      - Remote URL with branch (e.g., https://github.com/user/repo#branch)
+      Useful for debugging the exact version of a CI job that failed on CI.
+
+  -h, --help
+      Show this help message and exit.
+EOF
+}
+
+error() { printf "\e[31m[ERROR]\e[0m %s\n" "$1" >&2; }
+
+cleanup() {
+    if [[ -n "$tmpdir" && -d "$tmpdir" ]]; then
+        rm -rf -- "$tmpdir"
+    fi
+}
+
+trap cleanup EXIT
+
+resolve_build_ctxt() {
+    # When we pass -c/--checkout <ref> we want the build context to be a clone
+    # of <ref>. There isn't really a nice way to do this in docker so this
+    # function resolves the build context depending on the contents of <ref>.
+
+    # First, the simple case: no '--checkout <ref>' option was used. We keep
+    # the default build context as the current working directory and generate a
+    # best-guess image prefix in the format: local-<pwd>:dirty.
+    if [ -z "$ref" ]; then
+        if [ ! -f ${TRYCI_DEFAULT_SCRIPT} ]; then
+            error "${TRYCI_DEFAULT_SCRIPT} not found in directory: $pwd".
+            exit 1
+        else
+            TRYCI_BUILD_PREFIX="local-$(basename $(pwd)):dirty"
+            return
+        fi
     fi
 
-    # Image name must be unique to the buildbot worker so that workers don't clash.
-    image_tag=${LOGNAME}-${repo}-${suffix}
+    # Second, some --checkout <ref> was provided. If we get here we can't
+    # simply use the working tree anymore. We need to find out what <ref> is,
+    # clone it into a tmpdir, and set that as our build context.
 
-    # The container will be run as the worker's "host user". The image is
-    # expected to create a user with the same UID.
+    tmpdir=$(mktemp -d) # removed with a cleanup trap on EXIT.
+    TRYCI_BUILD_CTXT="$tmpdir"
+
+    if [[ "$ref" =~ ^(https?|git|ssh):// ]] || [[ "$ref" =~ ^[^/]+@[^:]+: ]]; then
+        # <ref> is a remote repo. We'll need to extract any branch/commit/tag
+        # that may have been provided. For example, if passed:
+        #
+        #    '--checkout https://github.com/ykjit/yk#trying'
+        #
+        # We must extract 'trying' and ensure our clone is checked out on that
+        # branch.
+        local base_url="${ref%%#*}"
+        local tag=$([[ "$base_url" != "$ref" ]] && echo "${ref#*#}")
+
+        if [ -n "$tag" ]; then
+            git clone --no-checkout --depth="$TRYCI_REMOTE_CLONE_DEPTH" "$base_url" "$tmpdir"
+            # FIXME: this can fail if the requested commit hash is deeper than
+            # TRYCI_REMOTE_CLONE_DEPTH.
+            git -C "$tmpdir" checkout "$tag"
+        else
+            git clone --depth="$TRYCI_REMOTE_CLONE_DEPTH" "$base_url" "$tmpdir"
+        fi
+
+        # For the image tag, transform URLs like `https://github.com/user/repo`
+        # into `github.com_user_repo`.
+        local prefix=$(echo $base_url | \
+            sed -E 's/https:\/\/|git:\/\/(.*)/\1/g' | \
+            tr '/' '_' | \
+            sed -E 's/_$//')
+    else
+        # Finally, <ref> is branch/tag/commit of the local repo. This is a bit
+        # trickier because we want to ensure that any checkout only hits refs
+        # in our local git cache and never tries to pull from remote.
+        local prefix="local-$(basename $(pwd))"
+        local tag=$ref
+        if git rev-parse --verify --quiet "$ref" >/dev/null; then
+            # Before we waste time doing anything, lets check if a CI build
+            # script even exists at the given ref.
+            if ! git cat-file -e $ref:$TRYCI_DEFAULT_SCRIPT 2>/dev/null; then
+                error "CI script '$TRYCI_DEFAULT_SCRIPT' does not exist at revision: $ref"
+                exit 1
+            fi
+
+            git clone --no-checkout . "$tmpdir"
+
+            # This is the important part. By copying the refs and modules over
+            # from the working tree, we ensure that any subsequent `git
+            # submodule --init` call is either a no-op or checks out an older
+            # commit that we already have downloaded. It will never have to
+            # clone from the remote.
+            cp -r .git/refs "$tmpdir/.git/"
+            cp -r .git/modules "$tmpdir/.git/"
+            cp .git/config "$tmpdir/.git/config"
+
+            # Finally, we checkout out the desired ref.
+            git -C "$tmpdir" checkout "$ref"
+        else
+            echo "$ref does not exist locally. Please fetch first if you need it."
+            exit 1
+        fi
+    fi
+
+    # This is important for projects like 'alloy' and 'yk' because we
+    # deliberatly did not clone recursively.
+    git -C "$tmpdir" submodule update --progress --init --recursive
+
+    if [[ "$tag" =~ ^[0-9a-fA-F]{6,40}$ ]]; then
+        # If <ref> contained a commit hash, we must shorten it to the first 6
+        # chars because docker tags have a strict length limit.
+        tag="${tag:0:6}"
+    fi
+    TRYCI_BUILD_PREFIX="$prefix${tag:+":$tag"}"
+}
+
+build_image() {
+    local dockerfile="$TRYCI_BUILD_CTXT/$1"
+    # Extract the dockerfile suffix. E.g. for '.buildbot_dockerfile_myrepo'
+    # it's 'myrepo'.
+    local suffix=$(echo "$1" | sed -e "s/^${TRYCI_DOCKERFILE_BASE}//")
+
+    # Create a unique image tag so that old docker image builds can be reused.
+    image_tag=${LOGNAME}-${TRYCI_BUILD_PREFIX}-${suffix}
     ci_uid=`id -u`
 
-    # Build an image for the CI job.
-    docker build --build-arg CI_UID=${ci_uid} --build-arg CI_RUNNER=tryci -t ${image_tag} --file $1 .
+    docker build \
+      --build-arg CI_UID="${ci_uid}" \
+      --build-arg CI_RUNNER=tryci \
+      -t "${image_tag}" \
+      --file "${dockerfile}" \
+      "${TRYCI_BUILD_CTXT}"
 
-    # Run the CI job.
-    #
-    # We run the container with CAP_PERFMON capabilities to
-    # allow perf_event_open() to work (for those repos requiring the use
-    # of e.g. Intel PT).
-    container_tag=`docker create ${CAP_ARGS} -u ${ci_uid} -v /opt/ykllvm_cache:/opt/ykllvm_cache:ro ${image_tag}`
+    container_tag=$(docker create \
+      ${CAP_ARGS} \
+      -u "${ci_uid}" \
+      -v /opt/ykllvm_cache:/opt/ykllvm_cache:ro \
+      "${image_tag}")
+}
+
+run_image() {
     docker start -a ${container_tag}
     status=$?
 
@@ -80,17 +211,9 @@ run_image() {
     return ${status}
 }
 
-usage() {
-    echo "Runs a soft-dev CI job."
-    echo "Must be run from the same directory as the job's .buildbot.sh file."
-    echo "usage: tryci [-p] [-r server_name]"
-    echo "  -p, --post-mortem         Attach a shell to the image to prod around if the build fails."
-    echo "  -r, --remote server_name  Specify the server server_name to run the CI job on over SSH."
-}
-
-# Parse arguments
 pm=0
 server=""
+ref=""
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -100,8 +223,15 @@ while [ $# -gt 0 ]; do
       ;;
     -r | --remote)
       server="$2"
-      shift
-      shift
+      shift 2
+      ;;
+    -c | --checkout)
+      ref="$2"
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
       ;;
     *)
       usage
@@ -110,17 +240,35 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ ! docker buildx version &>/dev/null ] && [ -z ${server} ]; then
+    error "Docker Buildx is not installed or not available in your PATH".
+    error "For installation instructions, visit: https://docs.docker.com/buildx/working-with-buildx/"
+    exit 1
+fi
+
 if [ ! -z ${server} ]; then
     export DOCKER_HOST="ssh://${server}"
 fi
 
+# Start by getting the build context for this CI job.
+resolve_build_ctxt
 
-# Collect dockerfiles to test inside of.
-ci_dockerfiles=`ls .buildbot_dockerfile_* 2>/dev/null || true`
+TRYCI_DOCKERFILES=$(
+  find "$TRYCI_BUILD_CTXT" \
+    -name "$TRYCI_DOCKERFILE_BASE*" \
+    -maxdepth 1 \
+    -type f \
+    -exec basename {} \; \
+    2>/dev/null
+)
+
+if [ ! -f "$TRYCI_BUILD_CTXT/$TRYCI_DEFAULT_SCRIPT" ]; then
+    error "${TRYCI_DEFAULT_SCRIPT} not found in repository."
+fi
 
 # If the repo doesn't define any images, then use the default image.
-if [ "${ci_dockerfiles}" = "" ]; then
-    cat << EOF > ${DEFAULT_DOCKERFILE}
+if [ "${TRYCI_DOCKERFILES}" = "" ]; then
+    cat << EOF > ${TRYCI_DEFAULT_DOCKERFILE}
     FROM debian:bullseye
     ARG CI_UID
     RUN useradd -m -u \${CI_UID} ci
@@ -129,9 +277,9 @@ if [ "${ci_dockerfiles}" = "" ]; then
     WORKDIR /ci
     RUN chown \${CI_UID}:\${CI_UID} .
     COPY --chown=\${CI_UID}:\${CI_UID} . .
-    CMD sh -x .buildbot.sh
+    CMD sh -x ${TRYCI_DEFAULT_SCRIPT}
 EOF
-    ci_dockerfiles=${DEFAULT_DOCKERFILE}
+    TRYCI_DOCKERFILES=${TRYCI_DEFAULT_DOCKERFILE}
 fi
 
 # Sequentially run the images.
@@ -141,10 +289,11 @@ fi
 # buildbot run separate jobs in parallel.
 num_failed=0
 failed_dockerfiles=""
-for dockerfile in ${ci_dockerfiles}; do
+for dockerfile in ${TRYCI_DOCKERFILES}; do
     echo "CI> Running ${dockerfile}..."
     rc=0
-    run_image ${dockerfile} || rc=$?
+    build_image ${dockerfile}
+    run_image $container_tag || rc=$?
     if [ $rc -eq 0 ]; then
         echo "CI> ${dockerfile}: [ OK ]"
     else

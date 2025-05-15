@@ -27,6 +27,38 @@ can prod around inside the container.
 
 The docker image and container for the build are removed before the script exits.
 
+## Checking out a specific CI job
+
+By default, `TryCI` uses the working tree as the build context for the CI job.
+This works well for iterating on features, but can be annoying when you want to
+debug a remote CI job which failed.
+
+You can specify which version of the repo you want to `TryCI` with the
+`-c/--checkout <ref>` option. `<ref>` can be either a branch, commit, or tag of
+the local repository; or a remote URL of the git repository. Here are some
+examples:
+
+```sh
+# run tryci on the local HEAD
+tryci -c HEAD
+
+# run tryci on the local feature-branch
+tryci -c feature-branch
+
+# run tryci on the master branch of jacob-hughes/yk
+tryci -c https://github.com/jacob-hughes/yk
+
+# run tryci on the 'trying' branch of ykjit/yk
+tryci -c https://github.com/ykjit/yk#trying
+
+# run tryci on a specified commit ykjit/yk
+tryci -c https://github.com/ykjit/yk#0a6902a
+```
+
+This works with the `--post-mortem` flag, so -- provided docker is installed --
+you can even use `TryCI` to prod around in a CI job on machines which you
+haven't cloned the original repo or setup to develop on.
+
 ## Troubleshooting
 
 * Docker must be installed on both the local machine and remote machine used to
