@@ -31,9 +31,19 @@ usage() {
 Runs a soft-dev CI job.
 Must be run from the same directory as the job's .buildbot.sh file.
 
-usage: tryci [-p] [-r server_name] [-b <ref>] [-h]
+usage: tryci [-h] [-c <ref>] [-m <mount>...] [-p] [-r <server-name>]
 
 Options:
+  -c, --checkout <ref>
+      Run a CI job from a clone of <ref> instead of the working tree. Valid
+      formats:
+      - Branch name (e.g., main, feature/x)
+      - Commit hash (e.g., a1b2c3d)
+      - Tag (e.g., v1.0.0)
+      - Remote-tracking branch (e.g., origin/main)
+      - Remote URL with branch (e.g., https://github.com/user/repo#branch)
+      Useful for debugging the exact version of a CI job that failed on CI.
+
   -m, --mount <mount> [<mount> ...]
       Specify one or more bind-mounts. Each <mount> should be in the form:
         <host-path>:<container-path>[:ro|rw]
@@ -45,19 +55,9 @@ Options:
   -p, --post-mortem
       Attach a shell to the image to prod around if the build fails.
 
-  -r, --remote server_name
-      Specify the server \`server_name\` to run the CI job on over SSH.
+  -r, --remote <server-name>
+      Specify the server <server-name> to run the CI job on over SSH.
       Useful if you want to test on a remote CI environment.
-
-  -c, --checkout <ref>
-      Tryci will run a CI job from a clone of <ref> instead of the
-      working tree. Valid formats:
-      - Branch name (e.g., main, feature/x)
-      - Commit hash (e.g., a1b2c3d)
-      - Tag (e.g., v1.0.0)
-      - Remote-tracking branch (e.g., origin/main)
-      - Remote URL with branch (e.g., https://github.com/user/repo#branch)
-      Useful for debugging the exact version of a CI job that failed on CI.
 
   -h, --help
       Show this help message and exit.
