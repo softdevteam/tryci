@@ -213,7 +213,7 @@ build_image() {
     container_tag=$(docker create \
       ${CAP_ARGS} \
       -u "${ci_uid}" \
-      ${volumes}
+      ${volumes} \
       "${image_tag}")
 }
 
