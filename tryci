@@ -280,6 +280,7 @@ while [ $# -gt 0 ]; do
         volumes+=" -v $m"
       done
       shift
+      ;;
     -s | --script)
       script="$2"
       shift 2
