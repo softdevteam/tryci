@@ -212,6 +212,7 @@ build_image() {
 
     container_tag=$(docker create \
       ${CAP_ARGS} \
+      -e SD_NIGHTLY \
       -u "${ci_uid}" \
       ${volumes} \
       "${image_tag}")
